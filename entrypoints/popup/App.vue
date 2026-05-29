@@ -12,6 +12,7 @@ const gifDelaySec = ref('');
 const autoDownload = ref(true);
 const spaceKeyListening = ref(false);
 const lastGifUrl = ref('');
+const frameZipMessage = ref('');
 const minInterval = FAST_CAPTURE_MIN_INTERVAL_SEC;
 const slowThreshold = SLOW_CAPTURE_MIN_INTERVAL_SEC;
 const minGifDelay = GIF_MIN_FRAME_DELAY_SEC;
@@ -52,6 +53,25 @@ function downloadGif() {
     a.href = lastGifUrl.value;
     a.download = `gif-zone-${Date.now()}.gif`;
     a.click();
+}
+
+async function onDownloadFramesZip() {
+    frameZipMessage.value = '';
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+        frameZipMessage.value = '无活动标签页';
+        return;
+    }
+    try {
+        const res = await browser.tabs.sendMessage(tab.id, { type: 'DOWNLOAD_LAST_FRAMES_ZIP' });
+        if (res?.ok) {
+            frameZipMessage.value = `已下载 ${res.count} 张截图`;
+        } else {
+            frameZipMessage.value = res?.error || '下载截图失败';
+        }
+    } catch (err) {
+        frameZipMessage.value = String(err);
+    }
 }
 
 async function onStartSelect() {
@@ -96,6 +116,8 @@ async function onStartSelect() {
             <span class="hint">上次录制预览：</span>
             <img :src="lastGifUrl" alt="GIF 预览" />
             <button type="button" @click="downloadGif">下载 GIF</button>
+            <button type="button" @click="onDownloadFramesZip">下载截图 ZIP</button>
+            <span v-if="frameZipMessage" class="hint">{{ frameZipMessage }}</span>
         </div>
     </div>
 </template>

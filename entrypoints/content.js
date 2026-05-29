@@ -5,7 +5,7 @@ import {
     GIF_MIN_FRAME_DELAY_SEC,
     useFastCapture,
 } from '../utils/capture-config.js';
-import { buildGifFromFrames, downloadBlob, blobToDataUrl } from '../utils/gif.js';
+import { buildGifFromFrames, buildZipFromFrames, downloadBlob, blobToDataUrl } from '../utils/gif.js';
 
 const MSG_START_SELECT = 'START_SELECT';
 
@@ -17,6 +17,7 @@ let isRecording = false;
 let isProcessing = false;
 let stopRequested = false;
 let spaceKeyListening = false;
+let lastFrames = [];
 let hoverHandle = null;
 let adjustDrag = null;
 
@@ -513,9 +514,11 @@ async function recordFast(rect, intervalMs, maxDurationMs) {
 
 async function finishRecording(frames, frameDelayMs, autoDownload) {
     if (!frames.length) {
+        lastFrames = [];
         log('无截图，跳过 GIF');
         return;
     }
+    lastFrames = frames;
     const blob = buildGifFromFrames(frames, frameDelayMs);
     if (autoDownload) downloadBlob(blob, `gif-zone-${Date.now()}.gif`);
     try {
@@ -524,6 +527,16 @@ async function finishRecording(frames, frameDelayMs, autoDownload) {
         console.warn('[gif-zone] 预览保存失败（GIF 可能过大）', err);
     }
     log(`GIF 就绪, ${(blob.size / 1024).toFixed(1)} KB, 自动下载=${autoDownload}`);
+}
+
+async function downloadLastFramesZip() {
+    if (!lastFrames.length) {
+        return { ok: false, error: '暂无可下载截图，请先录制一次' };
+    }
+    const blob = await buildZipFromFrames(lastFrames);
+    downloadBlob(blob, `gif-zone-frames-${Date.now()}.zip`);
+    log(`截图 ZIP 就绪, ${lastFrames.length} 张, ${(blob.size / 1024).toFixed(1)} KB`);
+    return { ok: true, count: lastFrames.length };
 }
 
 async function startRecording() {
@@ -641,8 +654,14 @@ export default defineContentScript({
             }
         });
 
-        browser.runtime.onMessage.addListener((message) => {
+        browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             if (message.type === MSG_START_SELECT) startSelectMode();
+            if (message.type === 'DOWNLOAD_LAST_FRAMES_ZIP') {
+                downloadLastFramesZip()
+                    .then((res) => sendResponse(res))
+                    .catch((err) => sendResponse({ ok: false, error: String(err) }));
+                return true;
+            }
         });
 
         document.addEventListener('keydown', onKeyDown, true);
