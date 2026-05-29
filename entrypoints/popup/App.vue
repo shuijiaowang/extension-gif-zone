@@ -9,10 +9,13 @@ import {
 const intervalSec = ref(1);
 const durationSec = ref('');
 const gifDelaySec = ref('');
+const screenshotScale = ref(1);
+const gifScale = ref(1);
 const autoDownload = ref(true);
 const spaceKeyListening = ref(false);
 const lastGifUrl = ref('');
 const frameZipMessage = ref('');
+const qqWechatMessage = ref('');
 const minInterval = FAST_CAPTURE_MIN_INTERVAL_SEC;
 const slowThreshold = SLOW_CAPTURE_MIN_INTERVAL_SEC;
 const minGifDelay = GIF_MIN_FRAME_DELAY_SEC;
@@ -21,10 +24,14 @@ async function saveConfig() {
     const interval = Number(intervalSec.value);
     const durationRaw = String(durationSec.value).trim();
     const delayRaw = String(gifDelaySec.value).trim();
+    const screenshotScaleValue = Number(screenshotScale.value) || 1;
+    const gifScaleValue = Number(gifScale.value) || 1;
     await browser.storage.local.set({
         captureIntervalSec: interval > 0 ? Math.max(interval, minInterval) : 1,
         captureDurationSec: durationRaw === '' ? null : Math.max(0, Number(durationRaw) || 0),
         gifFrameDelaySec: delayRaw === '' ? null : Math.max(minGifDelay, Number(delayRaw) || 0),
+        screenshotScale: Math.min(1, Math.max(0.1, screenshotScaleValue)),
+        gifScale: Math.min(1, Math.max(0.1, gifScaleValue)),
         autoDownload: autoDownload.value,
         spaceKeyListening: spaceKeyListening.value,
     });
@@ -35,6 +42,8 @@ onMounted(async () => {
         'captureIntervalSec',
         'captureDurationSec',
         'gifFrameDelaySec',
+        'screenshotScale',
+        'gifScale',
         'autoDownload',
         'spaceKeyListening',
         'lastGifDataUrl',
@@ -42,6 +51,8 @@ onMounted(async () => {
     if (data.captureIntervalSec != null) intervalSec.value = data.captureIntervalSec;
     if (data.captureDurationSec != null) durationSec.value = data.captureDurationSec;
     if (data.gifFrameDelaySec != null) gifDelaySec.value = data.gifFrameDelaySec;
+    if (data.screenshotScale != null) screenshotScale.value = data.screenshotScale;
+    if (data.gifScale != null) gifScale.value = data.gifScale;
     if (data.autoDownload != null) autoDownload.value = data.autoDownload;
     if (data.spaceKeyListening != null) spaceKeyListening.value = data.spaceKeyListening;
     if (data.lastGifDataUrl) lastGifUrl.value = data.lastGifDataUrl;
@@ -74,6 +85,25 @@ async function onDownloadFramesZip() {
     }
 }
 
+async function onDownloadQqWechatGif() {
+    qqWechatMessage.value = '';
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+        qqWechatMessage.value = '无活动标签页';
+        return;
+    }
+    try {
+        const res = await browser.tabs.sendMessage(tab.id, { type: 'DOWNLOAD_QQ_WECHAT_GIF' });
+        if (res?.ok) {
+            qqWechatMessage.value = `已下载 ${res.kb} KB，最终比例 ${res.scale}`;
+        } else {
+            qqWechatMessage.value = res?.error || '下载 GIF 失败';
+        }
+    } catch (err) {
+        qqWechatMessage.value = String(err);
+    }
+}
+
 async function onStartSelect() {
     await saveConfig();
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -102,6 +132,16 @@ async function onStartSelect() {
             <input v-model="gifDelaySec" type="number" :min="minGifDelay" step="0.01" placeholder="同截图间隔" @change="saveConfig" />
             <span class="hint">越小播放越快；下限 {{ minGifDelay }}s，更小会被浏览器按 0.1s 播放</span>
         </label>
+        <label>
+            截图压缩比
+            <input v-model.number="screenshotScale" type="number" min="0.1" max="1" step="0.05" @change="saveConfig" />
+            <span class="hint">影响内存里的原素材和下载截图 ZIP，1=不压缩</span>
+        </label>
+        <label>
+            GIF 压缩比
+            <input v-model.number="gifScale" type="number" min="0.1" max="1" step="0.05" @change="saveConfig" />
+            <span class="hint">生成 GIF 时在截图素材基础上再压缩，1=不压缩</span>
+        </label>
         <label class="checkbox">
             <input v-model="autoDownload" type="checkbox" @change="saveConfig" />
             录制结束后自动下载
@@ -116,8 +156,10 @@ async function onStartSelect() {
             <span class="hint">上次录制预览：</span>
             <img :src="lastGifUrl" alt="GIF 预览" />
             <button type="button" @click="downloadGif">下载 GIF</button>
+            <button type="button" @click="onDownloadQqWechatGif">下载 QQ/微信 GIF(&lt;1MB)</button>
             <button type="button" @click="onDownloadFramesZip">下载截图 ZIP</button>
             <span v-if="frameZipMessage" class="hint">{{ frameZipMessage }}</span>
+            <span v-if="qqWechatMessage" class="hint">{{ qqWechatMessage }}</span>
         </div>
     </div>
 </template>

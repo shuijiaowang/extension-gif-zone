@@ -24,6 +24,40 @@ export function buildGifFromFrames(frames, frameDelayMs) {
     return blob;
 }
 
+export function resizeFrame(frame, scale) {
+    if (scale >= 1) return frame;
+    const width = Math.max(1, Math.round(frame.width * scale));
+    const height = Math.max(1, Math.round(frame.height * scale));
+    const source = document.createElement('canvas');
+    source.width = frame.width;
+    source.height = frame.height;
+    const sourceCtx = source.getContext('2d');
+    sourceCtx.putImageData(new ImageData(frame.data, frame.width, frame.height), 0, 0);
+
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const outputCtx = output.getContext('2d', { willReadFrequently: true });
+    outputCtx.drawImage(source, 0, 0, width, height);
+    const { data } = outputCtx.getImageData(0, 0, width, height);
+    return { width, height, data: new Uint8ClampedArray(data) };
+}
+
+export function resizeFrames(frames, scale) {
+    if (scale >= 1) return frames;
+    return frames.map((frame) => resizeFrame(frame, scale));
+}
+
+export function buildGifUnderSize(frames, frameDelayMs, maxBytes, startScale) {
+    let scale = startScale;
+    let blob = buildGifFromFrames(resizeFrames(frames, scale), frameDelayMs);
+    while (blob.size > maxBytes && scale > 0.01) {
+        scale = Math.max(0.01, scale * 0.85);
+        blob = buildGifFromFrames(resizeFrames(frames, scale), frameDelayMs);
+    }
+    return { blob, scale };
+}
+
 /** 把 Blob 读成 data URL（用于在 popup 中预览/重新下载） */
 export function blobToDataUrl(blob) {
     return new Promise((resolve, reject) => {

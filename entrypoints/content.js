@@ -5,7 +5,15 @@ import {
     GIF_MIN_FRAME_DELAY_SEC,
     useFastCapture,
 } from '../utils/capture-config.js';
-import { buildGifFromFrames, buildZipFromFrames, downloadBlob, blobToDataUrl } from '../utils/gif.js';
+import {
+    buildGifFromFrames,
+    buildGifUnderSize,
+    buildZipFromFrames,
+    downloadBlob,
+    blobToDataUrl,
+    resizeFrame,
+    resizeFrames,
+} from '../utils/gif.js';
 
 const MSG_START_SELECT = 'START_SELECT';
 
@@ -23,6 +31,7 @@ let adjustDrag = null;
 
 const EDGE_HIT_PX = 8;
 const MIN_REGION_SIZE_PX = 1;
+const QQ_WECHAT_GIF_MAX_BYTES = 1024 * 1024;
 
 // 快速模式（tabCapture 流）相关，全部在 content 内消费，无需 offscreen
 let mediaStream = null;
@@ -295,6 +304,8 @@ async function getRecordConfig() {
         'captureIntervalSec',
         'captureDurationSec',
         'gifFrameDelaySec',
+        'screenshotScale',
+        'gifScale',
         'autoDownload',
     ]);
     let intervalSec = Number(data.captureIntervalSec) > 0 ? Number(data.captureIntervalSec) : 1;
@@ -310,10 +321,14 @@ async function getRecordConfig() {
         data.gifFrameDelaySec == null || data.gifFrameDelaySec === ''
             ? null
             : Number(data.gifFrameDelaySec);
+    const screenshotScale = clamp(Number(data.screenshotScale) || 1, 0.1, 1);
+    const gifScale = clamp(Number(data.gifScale) || 1, 0.1, 1);
     return {
         intervalSec,
         durationSec: durationSec > 0 ? durationSec : null,
         gifFrameDelaySec: gifFrameDelaySec >= 0 ? gifFrameDelaySec : null,
+        screenshotScale,
+        gifScale,
         autoDownload: data.autoDownload !== false,
         useFast: useFastCapture(intervalSec),
     };
@@ -369,7 +384,7 @@ async function captureOneFrameRetry(rect, dpr, retries = 3) {
     throw lastErr;
 }
 
-async function recordSlow(rect, dpr, intervalMs, maxDurationMs) {
+async function recordSlow(rect, dpr, intervalMs, maxDurationMs, screenshotScale) {
     const frames = [];
     const startTime = Date.now();
     let nextAt = startTime;
@@ -377,7 +392,7 @@ async function recordSlow(rect, dpr, intervalMs, maxDurationMs) {
     while (!shouldEndRecording(startTime, maxDurationMs)) {
         try {
             const dataUrl = await captureOneFrameRetry(rect, dpr);
-            frames.push(await dataUrlToFrame(dataUrl));
+            frames.push(resizeFrame(await dataUrlToFrame(dataUrl), screenshotScale));
             log(`截图 ${frames.length}`);
         } catch (err) {
             console.error('[gif-zone] 截图连续失败，结束录制', err);
@@ -457,7 +472,7 @@ function fitOutputSize(sw, sh) {
     };
 }
 
-function grabFastFrame(rect) {
+function grabFastFrame(rect, screenshotScale) {
     if (!mediaVideo?.videoWidth) throw new Error('stream not ready');
     // tabCapture 在视口宽高比与流约束(maxWidth/maxHeight)不一致时会给视频帧加黑边，
     // 视口内容只占据视频帧中间一块。必须用「等比缩放 + 居中偏移」反推真实内容区域，
@@ -480,10 +495,10 @@ function grabFastFrame(rect) {
     }
     cropCtx.drawImage(mediaVideo, sx, sy, sw, sh, 0, 0, outW, outH);
     const { data } = cropCtx.getImageData(0, 0, outW, outH);
-    return { width: outW, height: outH, data: new Uint8ClampedArray(data) };
+    return resizeFrame({ width: outW, height: outH, data: new Uint8ClampedArray(data) }, screenshotScale);
 }
 
-async function recordFast(rect, intervalMs, maxDurationMs) {
+async function recordFast(rect, intervalMs, maxDurationMs, screenshotScale) {
     const streamId = await requestTabStreamId();
     await startTabStream(streamId);
 
@@ -493,7 +508,7 @@ async function recordFast(rect, intervalMs, maxDurationMs) {
     try {
         while (!shouldEndRecording(startTime, maxDurationMs)) {
             try {
-                frames.push(grabFastFrame(rect));
+                frames.push(grabFastFrame(rect, screenshotScale));
                 if (frames.length <= 3 || frames.length % 10 === 0) log(`截图 ${frames.length} (快速)`);
             } catch (err) {
                 console.warn('[gif-zone] 抓帧失败', err);
@@ -512,14 +527,14 @@ async function recordFast(rect, intervalMs, maxDurationMs) {
 // 录制总流程
 // ---------------------------------------------------------------------------
 
-async function finishRecording(frames, frameDelayMs, autoDownload) {
+async function finishRecording(frames, frameDelayMs, autoDownload, gifScale) {
     if (!frames.length) {
         lastFrames = [];
         log('无截图，跳过 GIF');
         return;
     }
     lastFrames = frames;
-    const blob = buildGifFromFrames(frames, frameDelayMs);
+    const blob = buildGifFromFrames(resizeFrames(frames, gifScale), frameDelayMs);
     if (autoDownload) downloadBlob(blob, `gif-zone-${Date.now()}.gif`);
     try {
         await browser.storage.local.set({ lastGifDataUrl: await blobToDataUrl(blob) });
@@ -527,6 +542,21 @@ async function finishRecording(frames, frameDelayMs, autoDownload) {
         console.warn('[gif-zone] 预览保存失败（GIF 可能过大）', err);
     }
     log(`GIF 就绪, ${(blob.size / 1024).toFixed(1)} KB, 自动下载=${autoDownload}`);
+}
+
+async function downloadQqWechatGif() {
+    if (!lastFrames.length) {
+        return { ok: false, error: '暂无可下载 GIF，请先录制一次' };
+    }
+    const { gifFrameDelaySec, intervalSec, gifScale } = await getRecordConfig();
+    const frameDelayMs = Math.max(
+        gifFrameDelaySec != null ? gifFrameDelaySec * 1000 : intervalSec * 1000,
+        GIF_MIN_FRAME_DELAY_SEC * 1000,
+    );
+    const { blob, scale } = buildGifUnderSize(lastFrames, frameDelayMs, QQ_WECHAT_GIF_MAX_BYTES, gifScale);
+    downloadBlob(blob, `gif-zone-qq-wechat-${Date.now()}.gif`);
+    log(`QQ/微信 GIF 就绪, ${(blob.size / 1024).toFixed(1)} KB, scale=${scale.toFixed(2)}`);
+    return { ok: true, kb: (blob.size / 1024).toFixed(1), scale: scale.toFixed(2) };
 }
 
 async function downloadLastFramesZip() {
@@ -549,7 +579,7 @@ async function startRecording() {
         return;
     }
 
-    const { intervalSec, durationSec, gifFrameDelaySec, autoDownload, useFast } = await getRecordConfig();
+    const { intervalSec, durationSec, gifFrameDelaySec, screenshotScale, gifScale, autoDownload, useFast } = await getRecordConfig();
     const intervalMs = intervalSec * 1000;
     let gifDelayMs = gifFrameDelaySec != null ? gifFrameDelaySec * 1000 : intervalMs;
     const gifMinDelayMs = GIF_MIN_FRAME_DELAY_SEC * 1000;
@@ -572,14 +602,16 @@ async function startRecording() {
     log('开始录制', {
         intervalSec,
         durationSec: durationSec ?? '不限',
+        screenshotScale,
+        gifScale,
         mode: useFast ? 'tabCapture(快速)' : 'captureVisibleTab(慢速)',
     });
 
     let frames = [];
     try {
         frames = useFast
-            ? await recordFast(rect, intervalMs, maxDurationMs)
-            : await recordSlow(rect, dpr, intervalMs, maxDurationMs);
+            ? await recordFast(rect, intervalMs, maxDurationMs, screenshotScale)
+            : await recordSlow(rect, dpr, intervalMs, maxDurationMs, screenshotScale);
     } catch (err) {
         console.error('[gif-zone] 录制异常', err);
         stopTabStream();
@@ -590,7 +622,7 @@ async function startRecording() {
 
     isProcessing = true;
     try {
-        await finishRecording(frames, gifDelayMs, autoDownload);
+        await finishRecording(frames, gifDelayMs, autoDownload, gifScale);
     } catch (err) {
         console.error('[gif-zone] GIF 合成失败', err);
     } finally {
@@ -658,6 +690,12 @@ export default defineContentScript({
             if (message.type === MSG_START_SELECT) startSelectMode();
             if (message.type === 'DOWNLOAD_LAST_FRAMES_ZIP') {
                 downloadLastFramesZip()
+                    .then((res) => sendResponse(res))
+                    .catch((err) => sendResponse({ ok: false, error: String(err) }));
+                return true;
+            }
+            if (message.type === 'DOWNLOAD_QQ_WECHAT_GIF') {
+                downloadQqWechatGif()
                     .then((res) => sendResponse(res))
                     .catch((err) => sendResponse({ ok: false, error: String(err) }));
                 return true;
