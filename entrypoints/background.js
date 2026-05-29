@@ -1,13 +1,9 @@
 import { SLOW_CAPTURE_MIN_INTERVAL_SEC } from '../utils/capture-config.js';
-import { clearGifOutput } from '../utils/gif-storage.js';
 
 const MIN_CAPTURE_GAP_MS = Math.ceil(SLOW_CAPTURE_MIN_INTERVAL_SEC * 1000);
-const OFFSCREEN_PATH = '/offscreen.html';
 
 let lastCaptureAt = 0;
 let captureChain = Promise.resolve();
-let creatingOffscreen = null;
-let fastCaptureTabId = null;
 
 function log(...args) {
     console.log('[gif-zone bg]', ...args);
@@ -38,6 +34,7 @@ async function cropDataUrl(dataUrl, rect, dpr) {
     });
 }
 
+// captureVisibleTab 有频率上限，串行排队并按最小间隔节流
 async function throttledCaptureVisibleTab(windowId, rect, dpr) {
     const run = async () => {
         const wait = MIN_CAPTURE_GAP_MS - (Date.now() - lastCaptureAt);
@@ -51,98 +48,30 @@ async function throttledCaptureVisibleTab(windowId, rect, dpr) {
     return task;
 }
 
-async function ensureOffscreen() {
-    const offscreenUrl = browser.runtime.getURL(OFFSCREEN_PATH);
-    const existing = await browser.runtime.getContexts({
-        contextTypes: ['OFFSCREEN_DOCUMENT'],
-        documentUrls: [offscreenUrl],
-    });
-    if (existing.length > 0) return;
-
-    if (creatingOffscreen) {
-        await creatingOffscreen;
-        return;
-    }
-
-    creatingOffscreen = browser.offscreen.createDocument({
-        url: OFFSCREEN_PATH,
-        reasons: ['USER_MEDIA'],
-        justification: 'High-speed region capture via tab media stream',
-    });
-    try {
-        await creatingOffscreen;
-    } finally {
-        creatingOffscreen = null;
-    }
-}
-
-function sendToOffscreen(message) {
-    return browser.runtime.sendMessage({ target: 'offscreen', ...message });
-}
-
-async function startFastCapture(tabId, config) {
-    const t0 = performance.now();
-    await clearGifOutput();
-    if (!browser.tabCapture?.getMediaStreamId) {
-        throw new Error('tabCapture not available');
-    }
-    await ensureOffscreen();
-    const streamId = await browser.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    log('getMediaStreamId', `${(performance.now() - t0).toFixed(0)}ms`, { tabId });
-
-    const res = await sendToOffscreen({
-        type: 'OFFSCREEN_START_RECORDING',
-        streamId,
-        config,
-    });
-    if (!res?.ok) throw new Error(res?.error || 'offscreen recording failed');
-    log('recording started', { totalMs: (performance.now() - t0).toFixed(0) });
-    fastCaptureTabId = tabId;
-}
-
-async function finishFastCapture(frameDelayMs) {
-    const t0 = performance.now();
-    fastCaptureTabId = null;
-    let frameCount = 0;
-    let hasGif = false;
-    try {
-        const res = await sendToOffscreen({ type: 'OFFSCREEN_FINISH', frameDelayMs });
-        frameCount = res?.frameCount ?? 0;
-        hasGif = !!res?.hasGif;
-        log('finish', { frameCount, hasGif, ms: (performance.now() - t0).toFixed(0) });
-    } catch (err) {
-        log('finish error', err);
-    }
-    try {
-        await browser.offscreen.closeDocument();
-    } catch {
-        /* ignore */
-    }
-    return { frameCount, hasGif };
-}
-
 export default defineBackground(() => {
     log('started', { id: browser.runtime.id });
 
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (message.target === 'offscreen') return;
-
         const handle = async () => {
-            if (message.type === 'START_FAST_CAPTURE') {
+            // 快速模式：为目标标签页生成 streamId，由该标签页的 content script 自行消费
+            if (message.type === 'GET_TAB_STREAM_ID') {
                 const tabId = sender.tab?.id;
                 if (!tabId) return { ok: false, error: 'no tab' };
-                await startFastCapture(tabId, message.payload);
-                return { ok: true };
+                if (!browser.tabCapture?.getMediaStreamId) {
+                    return { ok: false, error: 'tabCapture not available' };
+                }
+                // 处理器内第一个 await 必须是 getMediaStreamId（依赖用户手势，且 streamId 数秒后过期）
+                const streamId = await browser.tabCapture.getMediaStreamId({
+                    targetTabId: tabId,
+                    consumerTabId: tabId,
+                });
+                log('getMediaStreamId', { tabId });
+                return { ok: true, streamId };
             }
 
-            if (message.type === 'STOP_FAST_CAPTURE') {
-                const result = await finishFastCapture(message.frameDelayMs);
-                return { ok: true, ...result };
-            }
-
+            // 慢速模式：截可见区并裁剪后回传 dataUrl
             if (message.type === 'CAPTURE_REGION') {
-                const tabId = sender.tab?.id;
-                if (!tabId) return { ok: false, error: 'no tab' };
+                if (!sender.tab) return { ok: false, error: 'no tab' };
                 const { rect, dpr } = message.payload;
                 const dataUrl = await throttledCaptureVisibleTab(sender.tab.windowId, rect, dpr);
                 return { ok: true, dataUrl };

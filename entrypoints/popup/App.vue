@@ -1,10 +1,11 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { FAST_CAPTURE_MIN_INTERVAL_SEC } from '../../utils/capture-config.js';
+import { FAST_CAPTURE_MIN_INTERVAL_SEC, SLOW_CAPTURE_MIN_INTERVAL_SEC } from '../../utils/capture-config.js';
 
 const intervalSec = ref(1);
 const durationSec = ref('');
 const minInterval = FAST_CAPTURE_MIN_INTERVAL_SEC;
+const slowThreshold = SLOW_CAPTURE_MIN_INTERVAL_SEC;
 
 async function saveConfig() {
     const interval = Number(intervalSec.value);
@@ -29,7 +30,7 @@ async function onStartSelect() {
         return;
     }
     await browser.tabs.sendMessage(tab.id, { type: 'START_SELECT' });
-    console.log('[gif-zone] 已发送框选消息');
+    window.close();
 }
 </script>
 
@@ -38,13 +39,14 @@ async function onStartSelect() {
         <label>
             截图间隔(秒)
             <input v-model.number="intervalSec" type="number" :min="minInterval" step="0.05" @change="saveConfig" />
-            <span class="hint">&lt;0.52s 使用 tabCapture 快速模式</span>
+            <span class="hint">&lt;{{ slowThreshold }}s 使用 tabCapture 快速模式（仅 HTTPS 页面）</span>
         </label>
         <label>
             录制时长(秒，空=不限)
             <input v-model="durationSec" type="number" min="0" step="0.1" placeholder="不限" @change="saveConfig" />
         </label>
         <button type="button" @click="onStartSelect">框选区域</button>
+        <p class="hint">框选后按 <b>Ctrl+Alt+G</b> 开始/停止录制，GIF 会自动下载。</p>
     </div>
 </template>
 
@@ -54,7 +56,7 @@ async function onStartSelect() {
     flex-direction: column;
     gap: 8px;
     padding: 8px;
-    min-width: 200px;
+    min-width: 220px;
 }
 label {
     display: flex;
@@ -68,6 +70,7 @@ input {
 .hint {
     font-size: 10px;
     color: #666;
+    margin: 0;
 }
 button {
     padding: 8px 16px;

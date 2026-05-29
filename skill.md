@@ -228,6 +228,7 @@ browser.runtime.onConnect.addListener(port => {
 
 ```
 ### 注意事项。
+#### vue响应式变量不能直接存入storage
 
 ```js
 //注意事项，vue的响应式变量，数组，进行storage存储时，会被转为map对象进行存储，
@@ -236,4 +237,7 @@ await appStateManager.globalConfigStorage.setValue({
     workdayWeeks: [...appState.globalConfig.workdayWeeks] // 纯数组存进去,不然会被改为对象。
 })
 ```
+#### 通信协议返回数据小心序列化，如图片作为返回值
+#### 不要使用session:，三端都能用的是 local:
+不要使用browser.storage.local这种写法，遵守wxt规范
 
