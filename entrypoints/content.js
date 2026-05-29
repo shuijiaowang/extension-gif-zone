@@ -555,7 +555,7 @@ async function downloadQqWechatGif() {
     );
     const { blob, scale } = buildGifUnderSize(lastFrames, frameDelayMs, QQ_WECHAT_GIF_MAX_BYTES, gifScale);
     downloadBlob(blob, `gif-zone-qq-wechat-${Date.now()}.gif`);
-    log(`QQ/微信 GIF 就绪, ${(blob.size / 1024).toFixed(1)} KB, scale=${scale.toFixed(2)}`);
+    log(`QQ/微信 GIF 就绪, ${(blob.size / 1024).toFixed(2)} KB, scale=${scale.toFixed(2)}`);
     return { ok: true, kb: (blob.size / 1024).toFixed(1), scale: scale.toFixed(2) };
 }
 
