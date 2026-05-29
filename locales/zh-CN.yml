@@ -1,0 +1,8 @@
+# locales/zh-CN.yml
+extName: 这里是 extName
+extDescription: 这里是 extDescription
+
+test:
+  test1: 这里是 test1
+  test2: 这里是 test2
+test3: 这里是hello world

@@ -1,0 +1,8 @@
+# locales/en.yml
+extName: this is extName
+extDescription: this is extDescription
+
+test:
+  test1: this is test1
+  test2: this is test2
+test3: hello world
