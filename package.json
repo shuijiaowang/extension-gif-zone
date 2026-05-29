@@ -15,6 +15,7 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@wxt-dev/storage": "^1.2.8",
     "@wxt-dev/i18n": "^0.2.5",
     "gifenc": "^1.0.3",
     "pinia": "^3.0.4",
