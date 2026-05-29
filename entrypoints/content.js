@@ -2,9 +2,10 @@ import {
     SLOW_CAPTURE_MIN_INTERVAL_SEC,
     FAST_CAPTURE_MIN_INTERVAL_SEC,
     FAST_CAPTURE_MAX_OUTPUT_PX,
+    GIF_MIN_FRAME_DELAY_SEC,
     useFastCapture,
 } from '../utils/capture-config.js';
-import { buildGifFromFrames, downloadBlob } from '../utils/gif.js';
+import { buildGifFromFrames, downloadBlob, blobToDataUrl } from '../utils/gif.js';
 
 const MSG_START_SELECT = 'START_SELECT';
 
@@ -132,7 +133,12 @@ function startSelectMode() {
 // ---------------------------------------------------------------------------
 
 async function getRecordConfig() {
-    const data = await browser.storage.local.get(['captureIntervalSec', 'captureDurationSec']);
+    const data = await browser.storage.local.get([
+        'captureIntervalSec',
+        'captureDurationSec',
+        'gifFrameDelaySec',
+        'autoDownload',
+    ]);
     let intervalSec = Number(data.captureIntervalSec) > 0 ? Number(data.captureIntervalSec) : 1;
     if (intervalSec < FAST_CAPTURE_MIN_INTERVAL_SEC) {
         log(`截图间隔已限制为 ${FAST_CAPTURE_MIN_INTERVAL_SEC}s`);
@@ -142,9 +148,15 @@ async function getRecordConfig() {
         data.captureDurationSec == null || data.captureDurationSec === ''
             ? null
             : Number(data.captureDurationSec);
+    const gifFrameDelaySec =
+        data.gifFrameDelaySec == null || data.gifFrameDelaySec === ''
+            ? null
+            : Number(data.gifFrameDelaySec);
     return {
         intervalSec,
         durationSec: durationSec > 0 ? durationSec : null,
+        gifFrameDelaySec: gifFrameDelaySec >= 0 ? gifFrameDelaySec : null,
+        autoDownload: data.autoDownload !== false,
         useFast: useFastCapture(intervalSec),
     };
 }
@@ -342,14 +354,19 @@ async function recordFast(rect, intervalMs, maxDurationMs) {
 // 录制总流程
 // ---------------------------------------------------------------------------
 
-function finishRecording(frames, frameDelayMs) {
+async function finishRecording(frames, frameDelayMs, autoDownload) {
     if (!frames.length) {
         log('无截图，跳过 GIF');
         return;
     }
     const blob = buildGifFromFrames(frames, frameDelayMs);
-    downloadBlob(blob, `gif-zone-${Date.now()}.gif`);
-    log(`GIF 已下载, ${(blob.size / 1024).toFixed(1)} KB`);
+    if (autoDownload) downloadBlob(blob, `gif-zone-${Date.now()}.gif`);
+    try {
+        await browser.storage.local.set({ lastGifDataUrl: await blobToDataUrl(blob) });
+    } catch (err) {
+        console.warn('[gif-zone] 预览保存失败（GIF 可能过大）', err);
+    }
+    log(`GIF 就绪, ${(blob.size / 1024).toFixed(1)} KB, 自动下载=${autoDownload}`);
 }
 
 async function startRecording() {
@@ -362,8 +379,14 @@ async function startRecording() {
         return;
     }
 
-    const { intervalSec, durationSec, useFast } = await getRecordConfig();
+    const { intervalSec, durationSec, gifFrameDelaySec, autoDownload, useFast } = await getRecordConfig();
     const intervalMs = intervalSec * 1000;
+    let gifDelayMs = gifFrameDelaySec != null ? gifFrameDelaySec * 1000 : intervalMs;
+    const gifMinDelayMs = GIF_MIN_FRAME_DELAY_SEC * 1000;
+    if (gifDelayMs < gifMinDelayMs) {
+        log(`GIF 拼接间隔已限制为 ${GIF_MIN_FRAME_DELAY_SEC}s（更小会被浏览器按 0.1s 播放）`);
+        gifDelayMs = gifMinDelayMs;
+    }
     const maxDurationMs = durationSec != null ? durationSec * 1000 : null;
     const dpr = window.devicePixelRatio || 1;
     const rect = {
@@ -397,7 +420,7 @@ async function startRecording() {
 
     isProcessing = true;
     try {
-        finishRecording(frames, intervalMs);
+        await finishRecording(frames, gifDelayMs, autoDownload);
     } catch (err) {
         console.error('[gif-zone] GIF 合成失败', err);
     } finally {

@@ -24,6 +24,16 @@ export function buildGifFromFrames(frames, frameDelayMs) {
     return blob;
 }
 
+/** 把 Blob 读成 data URL（用于在 popup 中预览/重新下载） */
+export function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
 /** 触发浏览器下载一个 Blob */
 export function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
