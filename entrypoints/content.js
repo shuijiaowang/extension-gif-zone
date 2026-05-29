@@ -16,6 +16,12 @@ let isSelecting = false;
 let isRecording = false;
 let isProcessing = false;
 let stopRequested = false;
+let spaceKeyListening = false;
+let hoverHandle = null;
+let adjustDrag = null;
+
+const EDGE_HIT_PX = 8;
+const MIN_REGION_SIZE_PX = 1;
 
 // 快速模式（tabCapture 流）相关，全部在 content 内消费，无需 offscreen
 let mediaStream = null;
@@ -29,6 +35,12 @@ function log(...args) {
 
 function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
+}
+
+function isEditableTarget(target) {
+    const el = target instanceof Element ? target : null;
+    if (!el) return false;
+    return Boolean(el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'));
 }
 
 async function sleepUntil(deadline) {
@@ -54,6 +66,118 @@ function normalizeRect(x1, y1, x2, y2) {
     const width = Math.abs(x2 - x1);
     const height = Math.abs(y2 - y1);
     return { left, top, width, height, x1: left, y1: top, x2: left + width, y2: top + height };
+}
+
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+
+function setRegion(left, top, right, bottom) {
+    left = clamp(left, 0, window.innerWidth);
+    top = clamp(top, 0, window.innerHeight);
+    right = clamp(right, 0, window.innerWidth);
+    bottom = clamp(bottom, 0, window.innerHeight);
+
+    if (right - left < MIN_REGION_SIZE_PX) {
+        if (right >= window.innerWidth) left = right - MIN_REGION_SIZE_PX;
+        else right = left + MIN_REGION_SIZE_PX;
+    }
+    if (bottom - top < MIN_REGION_SIZE_PX) {
+        if (bottom >= window.innerHeight) top = bottom - MIN_REGION_SIZE_PX;
+        else bottom = top + MIN_REGION_SIZE_PX;
+    }
+
+    region = normalizeRect(left, top, right, bottom);
+    updateHighlight(region);
+}
+
+function getRegionHit(x, y) {
+    if (!region || selectOverlay || isSelecting || isRecording || isProcessing) return null;
+    const { left, top, width, height } = region;
+    const right = left + width;
+    const bottom = top + height;
+    const onVerticalSpan = y >= top - EDGE_HIT_PX && y <= bottom + EDGE_HIT_PX;
+    const onHorizontalSpan = x >= left - EDGE_HIT_PX && x <= right + EDGE_HIT_PX;
+    const candidates = [];
+
+    if (onVerticalSpan && Math.abs(x - left) <= EDGE_HIT_PX) {
+        candidates.push({ handle: 'left', distance: Math.abs(x - left) });
+    }
+    if (onVerticalSpan && Math.abs(x - right) <= EDGE_HIT_PX) {
+        candidates.push({ handle: 'right', distance: Math.abs(x - right) });
+    }
+    if (onHorizontalSpan && Math.abs(y - top) <= EDGE_HIT_PX) {
+        candidates.push({ handle: 'top', distance: Math.abs(y - top) });
+    }
+    if (onHorizontalSpan && Math.abs(y - bottom) <= EDGE_HIT_PX) {
+        candidates.push({ handle: 'bottom', distance: Math.abs(y - bottom) });
+    }
+    if (candidates.length) {
+        candidates.sort((a, b) => a.distance - b.distance);
+        return candidates[0].handle;
+    }
+    if (x >= left && x <= right && y >= top && y <= bottom) return 'move';
+    return null;
+}
+
+function getCursorForHandle(handle) {
+    if (handle === 'left' || handle === 'right') return 'ew-resize';
+    if (handle === 'top' || handle === 'bottom') return 'ns-resize';
+    if (handle === 'move') return 'move';
+    return '';
+}
+
+function moveRegion(dx, dy) {
+    const width = region.width;
+    const height = region.height;
+    const left = clamp(region.left + dx, 0, window.innerWidth - width);
+    const top = clamp(region.top + dy, 0, window.innerHeight - height);
+    setRegion(left, top, left + width, top + height);
+}
+
+function nudgeRegion(handle, key) {
+    if (!region) return false;
+    if (handle === 'move') {
+        if (key === 'ArrowLeft') moveRegion(-1, 0);
+        else if (key === 'ArrowRight') moveRegion(1, 0);
+        else if (key === 'ArrowUp') moveRegion(0, -1);
+        else if (key === 'ArrowDown') moveRegion(0, 1);
+        else return false;
+        return true;
+    }
+
+    const { left, top, x2: right, y2: bottom } = region;
+    if (handle === 'left' && key === 'ArrowLeft') setRegion(left - 1, top, right, bottom);
+    else if (handle === 'left' && key === 'ArrowRight') setRegion(Math.min(left + 1, right - MIN_REGION_SIZE_PX), top, right, bottom);
+    else if (handle === 'right' && key === 'ArrowLeft') setRegion(left, top, Math.max(right - 1, left + MIN_REGION_SIZE_PX), bottom);
+    else if (handle === 'right' && key === 'ArrowRight') setRegion(left, top, right + 1, bottom);
+    else if (handle === 'top' && key === 'ArrowUp') setRegion(left, top - 1, right, bottom);
+    else if (handle === 'top' && key === 'ArrowDown') setRegion(left, Math.min(top + 1, bottom - MIN_REGION_SIZE_PX), right, bottom);
+    else if (handle === 'bottom' && key === 'ArrowUp') setRegion(left, top, right, Math.max(bottom - 1, top + MIN_REGION_SIZE_PX));
+    else if (handle === 'bottom' && key === 'ArrowDown') setRegion(left, top, right, bottom + 1);
+    else return false;
+    return true;
+}
+
+function updateRegionFromDrag(e) {
+    if (!adjustDrag || !region) return;
+    const dx = e.clientX - adjustDrag.startX;
+    const dy = e.clientY - adjustDrag.startY;
+    const { left, top, width, height, x2: right, y2: bottom } = adjustDrag.startRegion;
+
+    if (adjustDrag.handle === 'move') {
+        const nextLeft = clamp(left + dx, 0, window.innerWidth - width);
+        const nextTop = clamp(top + dy, 0, window.innerHeight - height);
+        setRegion(nextLeft, nextTop, nextLeft + width, nextTop + height);
+    } else if (adjustDrag.handle === 'left') {
+        setRegion(clamp(left + dx, 0, right - MIN_REGION_SIZE_PX), top, right, bottom);
+    } else if (adjustDrag.handle === 'right') {
+        setRegion(left, top, clamp(right + dx, left + MIN_REGION_SIZE_PX, window.innerWidth), bottom);
+    } else if (adjustDrag.handle === 'top') {
+        setRegion(left, clamp(top + dy, 0, bottom - MIN_REGION_SIZE_PX), right, bottom);
+    } else if (adjustDrag.handle === 'bottom') {
+        setRegion(left, top, right, clamp(bottom + dy, top + MIN_REGION_SIZE_PX, window.innerHeight));
+    }
 }
 
 function removeSelectOverlay() {
@@ -126,6 +250,39 @@ function startSelectMode() {
             highlightEl = null;
         }
     });
+}
+
+function onRegionMouseDown(e) {
+    if (e.button !== 0) return;
+    const handle = getRegionHit(e.clientX, e.clientY);
+    if (!handle) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    hoverHandle = handle;
+    adjustDrag = {
+        handle,
+        startX: e.clientX,
+        startY: e.clientY,
+        startRegion: { ...region },
+    };
+    document.documentElement.style.cursor = getCursorForHandle(handle);
+}
+
+function onRegionMouseMove(e) {
+    if (adjustDrag) {
+        e.preventDefault();
+        updateRegionFromDrag(e);
+        return;
+    }
+
+    hoverHandle = getRegionHit(e.clientX, e.clientY);
+    document.documentElement.style.cursor = getCursorForHandle(hoverHandle);
+}
+
+function onRegionMouseUp() {
+    adjustDrag = null;
+    document.documentElement.style.cursor = getCursorForHandle(hoverHandle);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,11 +592,37 @@ function requestStopRecording() {
     log('收到停止录制');
 }
 
-function onKeyDown(e) {
-    if (!(e.ctrlKey && e.altKey && e.key.toLowerCase() === 'g')) return;
-    e.preventDefault();
+function toggleRecording() {
     if (isRecording) requestStopRecording();
     else startRecording();
+}
+
+function onKeyDown(e) {
+    if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        toggleRecording();
+        return;
+    }
+
+    if (
+        spaceKeyListening &&
+        !e.repeat &&
+        e.code === 'Space' &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey &&
+        !isEditableTarget(e.target)
+    ) {
+        toggleRecording();
+        return;
+    }
+
+    if (!isRecording && !isProcessing && !e.ctrlKey && !e.altKey && !e.metaKey && hoverHandle && e.key.startsWith('Arrow')) {
+        if (nudgeRegion(hoverHandle, e.key)) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }
 }
 
 export default defineContentScript({
@@ -449,10 +632,22 @@ export default defineContentScript({
     main() {
         log('content 已加载');
 
+        browser.storage.local.get('spaceKeyListening').then((data) => {
+            spaceKeyListening = data.spaceKeyListening === true;
+        });
+        browser.storage.onChanged.addListener((changes, areaName) => {
+            if (areaName === 'local' && changes.spaceKeyListening) {
+                spaceKeyListening = changes.spaceKeyListening.newValue === true;
+            }
+        });
+
         browser.runtime.onMessage.addListener((message) => {
             if (message.type === MSG_START_SELECT) startSelectMode();
         });
 
         document.addEventListener('keydown', onKeyDown, true);
+        document.addEventListener('mousedown', onRegionMouseDown, true);
+        document.addEventListener('mousemove', onRegionMouseMove, true);
+        document.addEventListener('mouseup', onRegionMouseUp, true);
     },
 });

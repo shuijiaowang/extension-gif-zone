@@ -10,6 +10,7 @@ const intervalSec = ref(1);
 const durationSec = ref('');
 const gifDelaySec = ref('');
 const autoDownload = ref(true);
+const spaceKeyListening = ref(false);
 const lastGifUrl = ref('');
 const minInterval = FAST_CAPTURE_MIN_INTERVAL_SEC;
 const slowThreshold = SLOW_CAPTURE_MIN_INTERVAL_SEC;
@@ -24,6 +25,7 @@ async function saveConfig() {
         captureDurationSec: durationRaw === '' ? null : Math.max(0, Number(durationRaw) || 0),
         gifFrameDelaySec: delayRaw === '' ? null : Math.max(minGifDelay, Number(delayRaw) || 0),
         autoDownload: autoDownload.value,
+        spaceKeyListening: spaceKeyListening.value,
     });
 }
 
@@ -33,12 +35,14 @@ onMounted(async () => {
         'captureDurationSec',
         'gifFrameDelaySec',
         'autoDownload',
+        'spaceKeyListening',
         'lastGifDataUrl',
     ]);
     if (data.captureIntervalSec != null) intervalSec.value = data.captureIntervalSec;
     if (data.captureDurationSec != null) durationSec.value = data.captureDurationSec;
     if (data.gifFrameDelaySec != null) gifDelaySec.value = data.gifFrameDelaySec;
     if (data.autoDownload != null) autoDownload.value = data.autoDownload;
+    if (data.spaceKeyListening != null) spaceKeyListening.value = data.spaceKeyListening;
     if (data.lastGifDataUrl) lastGifUrl.value = data.lastGifDataUrl;
 });
 
@@ -82,8 +86,12 @@ async function onStartSelect() {
             <input v-model="autoDownload" type="checkbox" @change="saveConfig" />
             录制结束后自动下载
         </label>
+        <label class="checkbox">
+            <input v-model="spaceKeyListening" type="checkbox" @change="saveConfig" />
+            空格键监听
+        </label>
         <button type="button" @click="onStartSelect">框选区域</button>
-        <p class="hint">框选后按 <b>Ctrl+Alt+G</b> 开始/停止录制。</p>
+        <p class="hint">框选后按 <b>Ctrl+Alt+G</b> 开始/停止录制；开启空格键监听后也可用空格切换。</p>
         <div v-if="lastGifUrl" class="preview">
             <span class="hint">上次录制预览：</span>
             <img :src="lastGifUrl" alt="GIF 预览" />
