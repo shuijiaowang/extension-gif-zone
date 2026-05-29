@@ -289,12 +289,18 @@ function fitOutputSize(sw, sh) {
 
 function grabFastFrame(rect) {
     if (!mediaVideo?.videoWidth) throw new Error('stream not ready');
-    const scaleX = mediaVideo.videoWidth / window.innerWidth;
-    const scaleY = mediaVideo.videoHeight / window.innerHeight;
-    const sx = Math.round(rect.left * scaleX);
-    const sy = Math.round(rect.top * scaleY);
-    const sw = Math.max(1, Math.round(rect.width * scaleX));
-    const sh = Math.max(1, Math.round(rect.height * scaleY));
+    // tabCapture 在视口宽高比与流约束(maxWidth/maxHeight)不一致时会给视频帧加黑边，
+    // 视口内容只占据视频帧中间一块。必须用「等比缩放 + 居中偏移」反推真实内容区域，
+    // 否则 scaleX≠scaleY 会把选区拉变形，且偏移错误会截到黑边与外围。
+    const vw = mediaVideo.videoWidth;
+    const vh = mediaVideo.videoHeight;
+    const scale = Math.min(vw / window.innerWidth, vh / window.innerHeight);
+    const offsetX = (vw - window.innerWidth * scale) / 2;
+    const offsetY = (vh - window.innerHeight * scale) / 2;
+    const sx = Math.round(offsetX + rect.left * scale);
+    const sy = Math.round(offsetY + rect.top * scale);
+    const sw = Math.max(1, Math.round(rect.width * scale));
+    const sh = Math.max(1, Math.round(rect.height * scale));
     const { outW, outH } = fitOutputSize(sw, sh);
     if (!cropCanvas || cropCanvas.width !== outW || cropCanvas.height !== outH) {
         cropCanvas = document.createElement('canvas');
